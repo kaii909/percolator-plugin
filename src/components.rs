@@ -1,4 +1,5 @@
 use fundsp::prelude32::*;
+use nalgebra::SVector;
 
 // emulates input/output coupling capacitors (dc blocking)
 #[derive(Clone, Copy, Default)]
@@ -88,41 +89,67 @@ impl SiliconStage {
     }
 }
 
-// emulates the asymmetric diode clipping stage
 #[derive(Clone)]
 pub struct DiodeClipper {
-    pub pos_thres: f32,
-    pub neg_thres: f32,
     pub sharpness: Shared,
 }
 
 impl Default for DiodeClipper {
     fn default() -> Self {
-        Self { 
-            pos_thres: 0.23,
-            neg_thres: -0.65,
+        Self {
             sharpness: shared(0.2),
         }
     }
 }
 
+// high precision analytical model using lambert approximation without loops
 impl DiodeClipper {
-    // applies asymmetric soft clipping using a biased rational function
-    pub fn process(&self, input: f32) -> f32 {
-        let s = self.sharpness.value();
-
-        let norm = if input >= 0.0 {
-            input / self.pos_thres
+    #[inline]
+    fn lambert_w_approx(&self, x: f32) -> f32 {
+        if x < 0.0 { return 0.0; }
+        if x < 1.0 {
+            // approx for low values
+            x * (1.0 - 0.3343 * x + 0.1145 * x * x)
         } else {
-            input / self.neg_thres.abs()
-        };
+            // saturation approx
+            let ln_x = x.ln();
+            let ln_ln_x = ln_x.ln();
+            ln_x - ln_ln_x + (ln_ln_x / ln_x)
+        }
+    }
 
-        let shaped = norm * s / (1.0 + (norm * s).abs());
+    pub fn process(&self, input_v: f32) -> f32 {
+        let r_impedance: f32 = 1000.0; // 1k Ohms
+        
+        let s_val = self.sharpness.value();
+        let input_vec = SVector::<f32, 1>::new(input_v);
 
-        if input >= 0.0 {
-            shaped * self.pos_thres
+        if input_vec[0] >= 0.0 {
+            // positive (germanium)
+            let is_ge: f32 = 1.0e-6;
+            let vt_ge: f32 = 0.026 * (1.0 + s_val * 4.0);
+
+            let c_param = (r_impedance * is_ge) / vt_ge;
+            
+            let arg = c_param * ( (input_vec[0] + r_impedance * is_ge) / vt_ge ).exp();
+            
+            let w = self.lambert_w_approx(arg);
+            let v_out = input_vec[0] - r_impedance * is_ge * ((w / c_param) - 1.0);
+            
+            v_out.clamp(0.0, input_vec[0])
         } else {
-            -(shaped * self.neg_thres.abs())
+            // negative (silicon)
+            let is_si: f32 = 1.0e-11;
+            let vt_si: f32 = 0.052 * (1.0 + s_val * 2.0);
+            let input_abs = input_vec[0].abs();
+
+            let c_param = (r_impedance * is_si) / vt_si;
+            let arg = c_param * ( (input_abs + r_impedance * is_si) / vt_si ).exp();
+            
+            let w = self.lambert_w_approx(arg);
+            let v_out_abs = input_abs - r_impedance * is_si * ((w / c_param) - 1.0);
+            
+            -(v_out_abs.clamp(0.0, input_abs))
         }
     }
 }

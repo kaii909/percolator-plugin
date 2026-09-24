@@ -18,6 +18,12 @@ struct PercolatorParams {
 
     #[id = "balance"]
     pub balance: FloatParam,
+
+    #[id = "sharpness"]
+    pub sharpness: FloatParam,
+
+    #[id = "feedback"]
+    pub feedback: FloatParam,
 }
 
 impl Default for HarmonicPercolator {
@@ -25,12 +31,16 @@ impl Default for HarmonicPercolator {
         Self {
             params: Arc::new(PercolatorParams {
                 harmonics: FloatParam::new(
-                    "Harmonics",
+                    "harmonics",
                     0.5,
                     FloatRange::Linear { min: 0.0, max: 1.0 },
                 )
                 .with_smoother(SmoothingStyle::Linear(10.0)),
-                balance: FloatParam::new("Balance", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })
+                balance: FloatParam::new("balance", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })
+                    .with_smoother(SmoothingStyle::Linear(10.0)),
+                sharpness: FloatParam::new("sharpness", 0.2, FloatRange::Linear { min: 0.0, max: 1.0 })
+                    .with_smoother(SmoothingStyle::Linear(10.0)),
+                feedback: FloatParam::new("feedback", 0.15, FloatRange::Linear { min: 0.0, max: 1.0 })
                     .with_smoother(SmoothingStyle::Linear(10.0)),
             }),
             dsp_left: PercolatorDSP::default(),
@@ -87,25 +97,28 @@ impl Plugin for HarmonicPercolator {
         // sample-major loop so smoothers advance once per sample frame
         match buffer.as_slice() {
             [mono] => {
-                for s in mono.iter_mut() {
+                for sample in mono.iter_mut() {
                     let h = self.params.harmonics.smoothed.next();
                     let b = self.params.balance.smoothed.next();
-                    *s = self.dsp_left.filter(h, b, *s);
+                    let s = self.params.sharpness.smoothed.next();
+                    let f = self.params.feedback.smoothed.next();
+                    *sample = self.dsp_left.filter(h, s, f, b, *sample);
                 }
             }
             [left, right] => {
                 for (l, r) in left.iter_mut().zip(right.iter_mut()) {
                     let h = self.params.harmonics.smoothed.next();
                     let b = self.params.balance.smoothed.next();
-                    *l = self.dsp_left.filter(h, b, *l);
-                    *r = self.dsp_right.filter(h, b, *r);
+                    let s = self.params.sharpness.smoothed.next();
+                    let f = self.params.feedback.smoothed.next();
+                    *l = self.dsp_left.filter(h, s, f, b, *l);
+                    *r = self.dsp_right.filter(h, s, f, b, *r);
                 }
             }
             _ => {}
         }
         ProcessStatus::Normal
     }
-
     fn deactivate(&mut self) {}
 }
 

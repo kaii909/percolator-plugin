@@ -1,3 +1,5 @@
+use fundsp::prelude32::*;
+
 // emulates input/output coupling capacitors (dc blocking)
 #[derive(Clone, Copy, Default)]
 pub struct DcBlocker {
@@ -47,34 +49,59 @@ impl GermaniumStage {
 }
 
 // emulates the npn silicon transistor stage (q2)
-#[derive(Clone, Copy, Default)]
+#[derive(Clone)]
 pub struct SiliconStage {
     pub feedback_mem: f32,
+    pub feedback_mix: Shared,
+    pub fb_hp_mem: f32,
+}
+
+impl Default for SiliconStage {
+    fn default() -> Self {
+        Self { feedback_mem: 0.0, feedback_mix: shared(0.15), fb_hp_mem: 0.0 }
+    }
 }
 
 impl SiliconStage {
     // applies cleaner gain with shunt feedback mixing
-    pub fn process(&mut self, input: f32, feedback_mix: f32) -> f32 {
-        let mixed = input + feedback_mix;
-        // silicon clips harder and more symmetrically
-        mixed.tanh()
+    pub fn process(&mut self, input: f32) -> f32 {
+        // squared mix to map the parameter exponentialy (0.2 turns 0.04, avoiding excessive
+        // feedback at low values)
+        let mix = self.feedback_mix.value() * self.feedback_mix.value();
+
+        // AC coupling
+        let fb_ac = self.feedback_mem - self.fb_hp_mem;
+
+        // hp filter interacts with input, resulting in different tones
+        let freq_factor = 0.03 + (input.abs() * 0.12);
+        self.fb_hp_mem += freq_factor * fb_ac;
+
+        // for unstopabble feedback, it needs to loop as a positive signal
+        let input_loop = fb_ac * mix * 12.0;
+        
+        let mixed = input + input_loop;
+
+        let output = (mixed * 1.9).tanh();
+        
+        self.feedback_mem = output;
+        output
     }
 }
 
 // emulates the asymmetric diode clipping stage
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 pub struct DiodeClipper {
-    pos_thres: f32,
-    neg_thres: f32,
-    sharpness: f32,
+    pub pos_thres: f32,
+    pub neg_thres: f32,
+    pub sharpness: Shared,
 }
 
 impl Default for DiodeClipper {
     fn default() -> Self {
         Self { 
-            pos_thres: 0.26, 
-            neg_thres: -0.27, 
-            sharpness: 0.3 
+            pos_thres: 0.23,
+            neg_thres: -0.65,
+            sharpness: shared(0.2),
         }
     }
 }
@@ -82,18 +109,59 @@ impl Default for DiodeClipper {
 impl DiodeClipper {
     // applies asymmetric soft clipping using a biased rational function
     pub fn process(&self, input: f32) -> f32 {
+        let s = self.sharpness.value();
+
         let norm = if input >= 0.0 {
             input / self.pos_thres
         } else {
             input / self.neg_thres.abs()
         };
 
-        let shaped = norm * self.sharpness / (1.0 + (norm * self.sharpness).abs());
+        let shaped = norm * s / (1.0 + (norm * s).abs());
 
         if input >= 0.0 {
             shaped * self.pos_thres
         } else {
             -(shaped * self.neg_thres.abs())
         }
+    }
+}
+
+// FUN DSP AUDIO NODES =============================================================================
+// circuit coefficients can be changed here
+
+impl AudioNode for DcBlocker {
+    const ID: u64 = 1001; 
+    type Inputs = U1;
+    type Outputs = U1;
+
+    #[inline]
+    fn tick(&mut self, input: &Frame<f32, Self::Inputs>) -> Frame<f32, Self::Outputs> {
+        let out = self.process(input[0], 0.995);
+        Frame::from([out])
+    }
+}
+
+impl AudioNode for GermaniumStage {
+    const ID: u64 = 1002;
+    type Inputs = U1;
+    type Outputs = U1;
+
+    #[inline]
+    fn tick(&mut self, input: &Frame<f32, Self::Inputs>) -> Frame<f32, Self::Outputs> {
+        let out = self.process(input[0], 0.35);
+        Frame::from([out])
+    }
+}
+
+impl AudioNode for SiliconStage {
+    const ID: u64 = 1003;
+    type Inputs = U1;
+    type Outputs = U1;
+
+    #[inline]
+    fn tick(&mut self, input: &Frame<f32, Self::Inputs>) -> Frame<f32, Self::Outputs> {
+        let out = self.process(input[0]);
+        Frame::from([out])
     }
 }

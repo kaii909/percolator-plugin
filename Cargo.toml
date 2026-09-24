@@ -8,6 +8,7 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 fundsp = "0.23.0"
+nalgebra = "0.35.0"
 nice-plug = "0.4"
 
 # # Enable a small amount of optimization in the dev profile.

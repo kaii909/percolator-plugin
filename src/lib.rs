@@ -1,22 +1,21 @@
-use nice_plug::prelude::*;
-
 use dsp::PercolatorDSP;
+use nice_plug::prelude::*;
 use std::sync::Arc;
 
+mod components;
 mod dsp;
 
 pub struct HarmonicPercolator {
     params: Arc<PercolatorParams>,
-    dsp: PercolatorDSP,
+    dsp_left: PercolatorDSP,
+    dsp_right: PercolatorDSP,
 }
 
 #[derive(Params)]
 struct PercolatorParams {
-    // harmonics controls the input gain/drive level
     #[id = "harmonics"]
     pub harmonics: FloatParam,
 
-    // balance controls the output volume level
     #[id = "balance"]
     pub balance: FloatParam,
 }
@@ -27,18 +26,15 @@ impl Default for HarmonicPercolator {
             params: Arc::new(PercolatorParams {
                 harmonics: FloatParam::new(
                     "Harmonics",
-                    0.5, // default value
+                    0.5,
                     FloatRange::Linear { min: 0.0, max: 1.0 },
                 )
                 .with_smoother(SmoothingStyle::Linear(10.0)),
-                balance: FloatParam::new(
-                    "Balance",
-                    0.5, // default value
-                    FloatRange::Linear { min: 0.0, max: 1.0 },
-                )
-                .with_smoother(SmoothingStyle::Linear(10.0)),
+                balance: FloatParam::new("Balance", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })
+                    .with_smoother(SmoothingStyle::Linear(10.0)),
             }),
-            dsp: PercolatorDSP::default(),
+            dsp_left: PercolatorDSP::default(),
+            dsp_right: PercolatorDSP::default(),
         }
     }
 }
@@ -77,8 +73,8 @@ impl Plugin for HarmonicPercolator {
         buffer_config: &BufferConfig,
         _context: &mut impl ActivateContext<Self>,
     ) -> bool {
-        // updates sample rate when plugin is loaded or project rate changes
-        self.dsp.set_sr(buffer_config.sample_rate);
+        self.dsp_left.set_sr(buffer_config.sample_rate);
+        self.dsp_right.set_sr(buffer_config.sample_rate);
         true
     }
 
@@ -88,11 +84,24 @@ impl Plugin for HarmonicPercolator {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        for (ch, channel_slice) in buffer.as_slice().iter_mut().enumerate() {
-            let harmonics = &self.params.harmonics;
-            let balance = &self.params.balance;
-            self.dsp
-            .process_sample(channel_slice, ch, harmonics, balance);
+        // sample-major loop so smoothers advance once per sample frame
+        match buffer.as_slice() {
+            [mono] => {
+                for s in mono.iter_mut() {
+                    let h = self.params.harmonics.smoothed.next();
+                    let b = self.params.balance.smoothed.next();
+                    *s = self.dsp_left.filter(h, b, *s);
+                }
+            }
+            [left, right] => {
+                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                    let h = self.params.harmonics.smoothed.next();
+                    let b = self.params.balance.smoothed.next();
+                    *l = self.dsp_left.filter(h, b, *l);
+                    *r = self.dsp_right.filter(h, b, *r);
+                }
+            }
+            _ => {}
         }
         ProcessStatus::Normal
     }

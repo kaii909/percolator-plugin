@@ -1,22 +1,96 @@
 use fundsp::prelude32::*;
-use nalgebra::SVector;
+use nalgebra::{SMatrix, SVector};
 
-// emulates input/output coupling capacitors (dc blocking)
-#[derive(Clone, Copy, Default)]
-pub struct DcBlocker {
-    x_prev: f32,
-    y_prev: f32,
+// integrated state-space system for linear circuitry simulation
+#[derive(Clone)]
+pub struct CircuitStateSpace {
+    state: SVector<f32, 2>,
+    ad: SMatrix<f32, 2, 2>,
+    bd: SVector<f32, 2>,
+    cd: SMatrix<f32, 1, 2>,
+    dd: f32,
+    current_sr: f32,
 }
 
-impl DcBlocker {
-    // applies one-pole high-pass filter
-    pub fn process(&mut self, input: f32, coeff: f32) -> f32 {
-        let output = input - self.x_prev + coeff * self.y_prev;
-        self.x_prev = input;
-        self.y_prev = output;
-        output
+impl Default for CircuitStateSpace {
+    fn default() -> Self {
+        let mut s = Self {
+            state: SVector::<f32, 2>::zeros(),
+            ad: SMatrix::<f32, 2, 2>::zeros(),
+            bd: SVector::<f32, 2>::zeros(),
+            cd: SMatrix::<f32, 1, 2>::zeros(),
+            dd: 0.0,
+            current_sr: 44100.0,
+        };
+        s.recalculate_matrices(44100.0);
+        s
     }
 }
+
+impl CircuitStateSpace {
+    // computes analytical state-space matrices using bilinear transform
+    pub fn recalculate_matrices(&mut self, sr: f32) {
+        self.current_sr = sr;
+        let t = 1.0 / sr;
+
+        // equivalent physical cutoff frequencies (rad/s)
+        let r1_c1 = 2.0 * std::f32::consts::PI * 15.0;   // dc input blocker cutoff
+        let r2_c2 = 2.0 * std::f32::consts::PI * 3200.0; // germanium bandwidth cutoff
+
+        // continuous-time state-space representation matrices
+        let a_continuous = SMatrix::<f32, 2, 2>::new(
+            -r1_c1,   0.0,
+             0.0,   -r2_c2
+        );
+        let b_continuous = SVector::<f32, 2>::new(r1_c1, r2_c2);
+        let c_continuous = SMatrix::<f32, 1, 2>::new(-1.0, 1.0);
+        let d_continuous = 1.0;
+
+        // discrete-time mapping using standard trapezoidal discretization
+        let identity = SMatrix::<f32, 2, 2>::identity();
+        let inv_term = (identity - a_continuous * (t / 2.0)).try_inverse()
+            .unwrap_or_else(SMatrix::<f32, 2, 2>::identity);
+
+        self.ad = inv_term * (identity + a_continuous * (t / 2.0));
+        self.bd = inv_term * b_continuous * (t / 2.0);
+        self.cd = c_continuous * (identity + self.ad) * 0.5;
+        
+        // extracts explicit scalar f32 value from 1x1 matrix multiplication product
+        let cd_times_bd = c_continuous * self.bd;
+        self.dd = d_continuous + cd_times_bd[0];
+    }
+
+    // applies the linear filter system in a single loop-free step
+    #[inline]
+    pub fn process(&mut self, input: f32) -> f32 {
+        let u = SVector::<f32, 1>::new(input);
+        
+        // output equation: y[n] = C * x[n-1] + D * u[n]
+        let y = self.cd * self.state + self.dd * u;
+        
+        // state update equation: x[n] = A * x[n-1] + B * u[n]
+        self.state = self.ad * self.state + self.bd * u;
+
+        y[0]
+    }
+}
+
+// // emulates input/output coupling capacitors (dc blocking)
+// #[derive(Clone, Copy, Default)]
+// pub struct DcBlocker {
+//     x_prev: f32,
+//     y_prev: f32,
+// }
+//
+// impl DcBlocker {
+//     // applies one-pole high-pass filter
+//     pub fn process(&mut self, input: f32, coeff: f32) -> f32 {
+//         let output = input - self.x_prev + coeff * self.y_prev;
+//         self.x_prev = input;
+//         self.y_prev = output;
+//         output
+//     }
+// }
 
 // emulates germanium transistor bandwidth limitation
 #[derive(Clone, Copy, Default)]
@@ -89,6 +163,7 @@ impl SiliconStage {
     }
 }
 
+// emulates the asymmetric diode clipping stage
 #[derive(Clone)]
 pub struct DiodeClipper {
     pub sharpness: Shared,
@@ -157,17 +232,35 @@ impl DiodeClipper {
 // FUN DSP AUDIO NODES =============================================================================
 // circuit coefficients can be changed here
 
-impl AudioNode for DcBlocker {
-    const ID: u64 = 1001; 
+impl AudioNode for CircuitStateSpace {
+    const ID: u64 = 1000;
     type Inputs = U1;
     type Outputs = U1;
 
     #[inline]
     fn tick(&mut self, input: &Frame<f32, Self::Inputs>) -> Frame<f32, Self::Outputs> {
-        let out = self.process(input[0], 0.995);
+        // reads current sample rate stored inside node instance state
+        let out = self.process(input[0]);
         Frame::from([out])
     }
+
+    // handles sample rate updates directly from host dsp graph pipeline activation
+    fn set_sample_rate(&mut self, sample_rate: f64) {
+        self.recalculate_matrices(sample_rate as f32);
+    }
 }
+
+// impl AudioNode for DcBlocker {
+//     const ID: u64 = 1001; 
+//     type Inputs = U1;
+//     type Outputs = U1;
+//
+//     #[inline]
+//     fn tick(&mut self, input: &Frame<f32, Self::Inputs>) -> Frame<f32, Self::Outputs> {
+//         let out = self.process(input[0], 0.995);
+//         Frame::from([out])
+//     }
+// }
 
 impl AudioNode for GermaniumStage {
     const ID: u64 = 1002;

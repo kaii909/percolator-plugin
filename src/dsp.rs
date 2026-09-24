@@ -35,7 +35,8 @@ impl PercolatorDSP {
 
     // graph is built once; knobs enter through var nodes read at audio rate
     fn build_circuit(drive: Shared, sharp: Shared, fb_mix: Shared, volume: Shared) -> Box<dyn AudioUnit> {
-        let dc_in = DcBlocker::default();
+        // state-space matrices for linear filter unifications
+        let state_space_filters = CircuitStateSpace::default();
         let q1_stage = GermaniumStage::default();
         let q2_stage = SiliconStage {
             feedback_mix: fb_mix.clone(),
@@ -43,13 +44,11 @@ impl PercolatorDSP {
         };
         let diodes = DiodeClipper {
             sharpness: sharp.clone(),
-            ..Default::default()
         };
-        let dc_out = DcBlocker::default();
 
         let chain = 
-            // 1. dc_in stage
-            An(dc_in)
+            // 1. integrated linear state-space stage
+            An(state_space_filters)
             // 2. circuit gain
             >> shape_fn(move |x|  x * (drive.clone().value() * 25.0))
             // 3. q1_stage (germanium)
@@ -58,14 +57,8 @@ impl PercolatorDSP {
             >> An(q2_stage)
             // 5. diode hard clipping
             >> shape_fn(move |x| diodes.process(x))
-            // 6. dc_out stage
-            >> An(dc_out)
-            // 7. volume stage
+            // 6. volume stage
             >> shape_fn(move |x| x * (volume.clone().value() * 2.0));
-
-            // >> lowpass_hz(3000.0, 1.0)
-            // >> (shape_fn(move |x: f32| diodes.process(x)) * 2.8)
-            // >> (highpass_hz(20.0, 1.0) * var(volume));
 
         // 2x oversampling around the non-linear stages kills aliasing
         Box::new(oversample(chain))

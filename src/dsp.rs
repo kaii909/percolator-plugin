@@ -6,7 +6,7 @@ pub struct PercolatorDSP {
     circuit: Box<dyn AudioUnit>,
     drive: Shared,
     sharpness: Shared,
-    pub feedback_mix: Shared,
+    // pub feedback_mix: Shared,
     volume: Shared,
 }
 
@@ -21,7 +21,7 @@ impl Default for PercolatorDSP {
             circuit,
             drive,
             sharpness,
-            feedback_mix,
+            // feedback_mix,
             volume,
         }
     }
@@ -37,38 +37,47 @@ impl PercolatorDSP {
     fn build_circuit(drive: Shared, sharp: Shared, fb_mix: Shared, volume: Shared) -> Box<dyn AudioUnit> {
         // state-space matrices for linear filter unifications
         let state_space_filters = CircuitStateSpace::default();
-        let q1_stage = GermaniumStage::default();
-        let q2_stage = SiliconStage {
+        
+        // explicitly pass the shared atomic pointer using struct initialization style to appease clippy
+        let q1_stage = GermaniumStage {
             feedback_mix: fb_mix.clone(),
-            ..Default::default()
+            ..GermaniumStage::default()
         };
+        
+        let q2_stage = SiliconStage::default();
         let diodes = DiodeClipper {
             sharpness: sharp.clone(),
         };
 
+        // clone references here so each closure gets its own ownership safely before the chain starts
+        let drive_for_gain = drive.clone();
+        let volume_for_gain = volume.clone();
+
         let chain = 
             // 1. integrated linear state-space stage
             An(state_space_filters)
-            // 2. circuit gain
-            >> shape_fn(move |x|  x * (drive.clone().value() * 25.0))
-            // 3. q1_stage (germanium)
+            // 2. circuit gain applied symmetrically to the single audio channel before splitting parameters
+            >> shape_fn(move |x| x * (drive_for_gain.value() * 18.0))
+            // 3. clone signal path to pass both balanced audio x and harmonics configuration down into GermaniumStage
+            >> (pass() | var(&drive))
+            // 4. q1_stage (germanium) processing audio input and consuming raw harmonics configuration
             >> An(q1_stage)
-            // 4. q2_stage (silicon)
+            // 5. q2_stage (silicon)
             >> An(q2_stage)
-            // 5. diode hard clipping
+            // 6. diode hard clipping
             >> shape_fn(move |x| diodes.process(x))
-            // 6. volume stage
-            >> shape_fn(move |x| x * (volume.clone().value() * 2.0));
+            // 7. volume stage
+            >> shape_fn(move |x| x * (volume_for_gain.value() * 2.0));
 
         // 2x oversampling around the non-linear stages kills aliasing
         Box::new(oversample(chain))
     }
 
     // pushes smoothed knob values into the graph and filters one sample
-    pub fn filter(&mut self, harmonics: f32, sharp: f32, fb: f32, balance: f32, input: f32) -> f32 {
+    pub fn filter(&mut self, harmonics: f32, sharp: f32, balance: f32, input: f32) -> f32 {
         self.drive.set(harmonics);
         self.sharpness.set(sharp);
-        self.feedback_mix.set(fb);
+        // self.feedback_mix.set(fb);
         self.volume.set(balance);
         self.circuit.filter_mono(input)
     }

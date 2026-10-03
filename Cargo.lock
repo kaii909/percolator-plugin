@@ -259,7 +259,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "es-percolator"
+name = "es_percolator"
 version = "0.1.0"
 dependencies = [
  "fundsp",

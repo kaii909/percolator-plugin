@@ -22,8 +22,8 @@ struct PercolatorParams {
     #[id = "sharpness"]
     pub sharpness: FloatParam,
 
-    #[id = "feedback"]
-    pub feedback: FloatParam,
+    // #[id = "feedback"]
+    // pub feedback: FloatParam,
 }
 
 impl Default for HarmonicPercolator {
@@ -40,8 +40,8 @@ impl Default for HarmonicPercolator {
                     .with_smoother(SmoothingStyle::Linear(10.0)),
                 sharpness: FloatParam::new("sharpness", 0.2, FloatRange::Linear { min: 0.0, max: 1.0 })
                     .with_smoother(SmoothingStyle::Linear(10.0)),
-                feedback: FloatParam::new("feedback", 0.15, FloatRange::Linear { min: 0.0, max: 1.0 })
-                    .with_smoother(SmoothingStyle::Linear(10.0)),
+                // feedback: FloatParam::new("feedback", 0.15, FloatRange::Linear { min: 0.0, max: 1.0 })
+                //     .with_smoother(SmoothingStyle::Linear(10.0)),
             }),
             dsp_left: PercolatorDSP::default(),
             dsp_right: PercolatorDSP::default(),
@@ -50,7 +50,7 @@ impl Default for HarmonicPercolator {
 }
 
 impl Plugin for HarmonicPercolator {
-    const NAME: &'static str = env!("CARGO_PKG_NAME");
+    const NAME: &'static str = "ES Percolator";
     const VENDOR: &'static str = "ECHOSYSTEM";
     const URL: &'static str = "https://echosystem.wroof.net";
     const EMAIL: &'static str = "echosystem@wroof.net";
@@ -101,8 +101,8 @@ impl Plugin for HarmonicPercolator {
                     let h = self.params.harmonics.smoothed.next();
                     let b = self.params.balance.smoothed.next();
                     let s = self.params.sharpness.smoothed.next();
-                    let f = self.params.feedback.smoothed.next();
-                    *sample = self.dsp_left.filter(h, s, f, b, *sample);
+                    // let f = self.params.feedback.smoothed.next();
+                    *sample = self.dsp_left.filter(h, s, b, *sample);
                 }
             }
             [left, right] => {
@@ -110,9 +110,9 @@ impl Plugin for HarmonicPercolator {
                     let h = self.params.harmonics.smoothed.next();
                     let b = self.params.balance.smoothed.next();
                     let s = self.params.sharpness.smoothed.next();
-                    let f = self.params.feedback.smoothed.next();
-                    *l = self.dsp_left.filter(h, s, f, b, *l);
-                    *r = self.dsp_right.filter(h, s, f, b, *r);
+                    // let f = self.params.feedback.smoothed.next();
+                    *l = self.dsp_left.filter(h, s,  b, *l);
+                    *r = self.dsp_right.filter(h, s, b, *r);
                 }
             }
             _ => {}
@@ -123,7 +123,7 @@ impl Plugin for HarmonicPercolator {
 }
 
 impl Vst3Plugin for HarmonicPercolator {
-    const VST3_CLASS_ID: [u8; 16] = *b"harmonpercolator";
+    const VST3_CLASS_ID: [u8; 16] = *b"harmonpercolato2";
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
         &[Vst3SubCategory::Fx, Vst3SubCategory::Tools];
 }

@@ -1,15 +1,21 @@
+use crate::editor::{PercolatorEditor, INITIAL_ZOOM_FACTOR, MIN_WINDOW_SIZE, RESIZE_HINT};
+
 use dsp::PercolatorDSP;
 use nice_plug::prelude::*;
+use nice_plug_egui::{
+    EguiEditor, EguiEditorState, EguiNiceSettings, RepaintNotifier,
+    create_egui_editor,
+};
 use std::sync::Arc;
+
+mod editor;
+
+// use nice_plug_egui::EguiEditor;
 
 mod components;
 mod dsp;
 
-pub struct HarmonicPercolator {
-    params: Arc<PercolatorParams>,
-    dsp_left: PercolatorDSP,
-    dsp_right: PercolatorDSP,
-}
+// parameters ====================================================================================
 
 #[derive(Params)]
 struct PercolatorParams {
@@ -21,28 +27,83 @@ struct PercolatorParams {
 
     #[id = "character"]
     pub character: FloatParam,
-
     // #[id = "feedback"]
     // pub feedback: FloatParam,
 }
 
-impl Default for HarmonicPercolator {
+impl Default for PercolatorParams {
     fn default() -> Self {
         Self {
-            params: Arc::new(PercolatorParams {
-                harmonics: FloatParam::new(
-                    "harmonics",
-                    0.5,
-                    FloatRange::Linear { min: 0.0, max: 1.0 },
-                )
-                .with_smoother(SmoothingStyle::Linear(10.0)),
-                balance: FloatParam::new("balance", 0.25, FloatRange::Linear { min: 0.0, max: 1.0 })
-                    .with_smoother(SmoothingStyle::Linear(10.0)),
-                character: FloatParam::new("character", 0.2, FloatRange::Linear { min: 0.0, max: 1.0 })
-                    .with_smoother(SmoothingStyle::Linear(10.0)),
-                // feedback: FloatParam::new("feedback", 0.15, FloatRange::Linear { min: 0.0, max: 1.0 })
-                //     .with_smoother(SmoothingStyle::Linear(10.0)),
-            }),
+            harmonics: FloatParam::new(
+                "harmonics",
+                0.5,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            )
+            .with_smoother(SmoothingStyle::Linear(10.0)),
+            balance: FloatParam::new(
+                "balance",
+                0.25,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            )
+            .with_smoother(SmoothingStyle::Linear(10.0)),
+            character: FloatParam::new(
+                "character",
+                0.2,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            )
+            .with_smoother(SmoothingStyle::Linear(10.0)),
+            // feedback: FloatParam::new("feedback", 0.15, FloatRange::Linear { min: 0.0, max: 1.0 })
+            //     .with_smoother(SmoothingStyle::Linear(10.0)),
+        }
+    }
+}
+
+// ===============================================================================================
+
+pub struct HarmonicPercolator {
+    params: Arc<PercolatorParams>,
+
+    // ui stuff =========
+    editor_state: Arc<EguiEditorState>,
+
+    /// A realtime-safe handle to request a repaint & update for an egui app.
+    ///
+    /// This can be used, for example, to notify the GUI that the value of a decibel
+    /// meter has changed.
+    repaint_notifier: RepaintNotifier,
+
+    /// Temporarily hold on to the initial GUI state until the editor is first opened.
+    initial_editor: Option<PercolatorEditor>,
+    // ==================
+    dsp_left: PercolatorDSP,
+    dsp_right: PercolatorDSP,
+}
+
+impl Default for HarmonicPercolator {
+    fn default() -> Self {
+        let params = Arc::new(PercolatorParams::default());
+
+        // If you wish to make the zoom factor user-configurable, then it should be loaded
+        // from a config file to make it persistent. The window size however does not need
+        // to be stored in a config file because hosts already keep track of that.
+        let zoom_factor = INITIAL_ZOOM_FACTOR;
+
+        let initial_editor = PercolatorEditor {
+            open_state: None,
+            track_info: None,
+            params: params.clone(),
+            zoom_factor,
+        };
+
+        Self {
+            params,
+
+            editor_state: EguiEditorState::from_size(MIN_WINDOW_SIZE, zoom_factor),
+
+            repaint_notifier: RepaintNotifier::new(),
+
+            initial_editor: Some(initial_editor),
+
             dsp_left: PercolatorDSP::default(),
             dsp_right: PercolatorDSP::default(),
         }
@@ -71,10 +132,19 @@ impl Plugin for HarmonicPercolator {
     ];
     type SysExMessage = ();
     type BackgroundTask = ();
-    type Editor = ();
+    type Editor = EguiEditor<editor::PercolatorEditor>;
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
+    }
+
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
+        create_egui_editor(
+            self.editor_state.clone(),
+            self.repaint_notifier.clone(),
+            EguiNiceSettings::new().with_resize_hint(RESIZE_HINT),
+            self.initial_editor.take().unwrap(),
+        )
     }
 
     fn activate(
@@ -111,7 +181,7 @@ impl Plugin for HarmonicPercolator {
                     let b = self.params.balance.smoothed.next();
                     let s = self.params.character.smoothed.next();
                     // let f = self.params.feedback.smoothed.next();
-                    *l = self.dsp_left.filter(h, s,  b, *l);
+                    *l = self.dsp_left.filter(h, s, b, *l);
                     *r = self.dsp_right.filter(h, s, b, *r);
                 }
             }

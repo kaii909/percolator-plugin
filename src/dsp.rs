@@ -34,7 +34,7 @@ impl PercolatorDSP {
     }
 
     // graph is built once; knobs enter through var nodes read at audio rate
-    fn build_circuit(drive: Shared, sharp: Shared, fb_mix: Shared, volume: Shared) -> Box<dyn AudioUnit> {
+    fn build_circuit(drive: Shared, character: Shared, fb_mix: Shared, volume: Shared) -> Box<dyn AudioUnit> {
         // state-space matrices for linear filter unifications
         let state_space_filters = CircuitStateSpace::default();
         
@@ -46,7 +46,7 @@ impl PercolatorDSP {
         
         let q2_stage = SiliconStage::default();
         let diodes = DiodeClipper {
-            sharpness: sharp.clone(),
+            character: character.clone(),
         };
 
         // clone references here so each closure gets its own ownership safely before the chain starts

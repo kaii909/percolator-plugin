@@ -36,9 +36,9 @@ impl Default for HarmonicPercolator {
                     FloatRange::Linear { min: 0.0, max: 1.0 },
                 )
                 .with_smoother(SmoothingStyle::Linear(10.0)),
-                balance: FloatParam::new("balance", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })
+                balance: FloatParam::new("balance", 0.25, FloatRange::Linear { min: 0.0, max: 1.0 })
                     .with_smoother(SmoothingStyle::Linear(10.0)),
-                character: FloatParam::new("sharpness", 0.2, FloatRange::Linear { min: 0.0, max: 1.0 })
+                character: FloatParam::new("character", 0.2, FloatRange::Linear { min: 0.0, max: 1.0 })
                     .with_smoother(SmoothingStyle::Linear(10.0)),
                 // feedback: FloatParam::new("feedback", 0.15, FloatRange::Linear { min: 0.0, max: 1.0 })
                 //     .with_smoother(SmoothingStyle::Linear(10.0)),

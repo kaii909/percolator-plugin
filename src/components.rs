@@ -40,6 +40,10 @@ impl Default for CircuitStateSpace {
 }
 
 impl CircuitStateSpace {
+    fn clear(&mut self) {
+        self.state = SVector::<f32, 2>::zeros();
+    }
+
     // computes analytical state-space matrices using bilinear transform
     pub fn recalculate_matrices(&mut self, sr: f32) {
         // eprintln!("sr = {sr}");
@@ -67,6 +71,11 @@ impl CircuitStateSpace {
     // applies the linear filter system in a single loop-free step
     #[inline]
     pub fn process(&mut self, input: f32) -> f32 {
+        if !input.is_finite() {
+            self.clear();
+            return 0.0;
+        }
+
         let u = SVector::<f32, 1>::new(input);
 
         // output equation: y[n] = C * x[n-1] + D * u[n]
@@ -147,6 +156,7 @@ impl Default for GermaniumStage {
 
 impl GermaniumStage {
     fn clear(&mut self) {
+        self.lpf = OnePoleLpf::default();
         self.feedback_mem = 0.0;
         self.fb_hp_mem = 0.0;
         self.acoustic_mem = 0.0;
@@ -217,22 +227,27 @@ impl GermaniumStage {
         self.feedback_mem = saturated_out;
 
         // dynamic waveform centering: high pass filter to prevent disproportionate electrical sag
-        self.dc_block_mem = self.dc_leak * self.dc_block_mem + (1.0 - self.dc_leak) * saturated_out;
+        // self.dc_block_mem = self.dc_leak * self.dc_block_mem + (1.0 - self.dc_leak) * saturated_out;
 
-        saturated_out - self.dc_block_mem
+        let out = saturated_out - self.dc_block_mem;
+        if !out.is_finite() {
+            self.clear();
+            return 0.0;
+        }
+        out
     }
 }
 
 // emulates the asymmetric diode clipping stage
 #[derive(Clone)]
 pub struct DiodeClipper {
-    pub sharpness: Shared,
+    pub character: Shared,
 }
 
 impl Default for DiodeClipper {
     fn default() -> Self {
         Self {
-            sharpness: shared(0.2),
+            character: shared(0.2),
         }
     }
 }
@@ -270,7 +285,7 @@ impl DiodeClipper {
 
         let r_impedance = 1000.0; // 1k Ohms
 
-        let s_val = self.sharpness.value();
+        let s_val = self.character.value();
 
         if input_v >= 0.0 {
             // positive (germanium)

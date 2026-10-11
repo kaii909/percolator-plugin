@@ -82,3 +82,15 @@ impl PercolatorDSP {
         self.circuit.filter_mono(input)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_oversampling_latency() {
+        let mut dsp = PercolatorDSP::default();
+        dsp.set_sr(48000.0);
+        eprintln!("latency: {:?}", dsp.circuit.latency());
+    }
+}

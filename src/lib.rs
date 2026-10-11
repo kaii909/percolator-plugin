@@ -19,8 +19,8 @@ struct PercolatorParams {
     #[id = "balance"]
     pub balance: FloatParam,
 
-    #[id = "sharpness"]
-    pub sharpness: FloatParam,
+    #[id = "character"]
+    pub character: FloatParam,
 
     // #[id = "feedback"]
     // pub feedback: FloatParam,
@@ -38,7 +38,7 @@ impl Default for HarmonicPercolator {
                 .with_smoother(SmoothingStyle::Linear(10.0)),
                 balance: FloatParam::new("balance", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })
                     .with_smoother(SmoothingStyle::Linear(10.0)),
-                sharpness: FloatParam::new("sharpness", 0.2, FloatRange::Linear { min: 0.0, max: 1.0 })
+                character: FloatParam::new("sharpness", 0.2, FloatRange::Linear { min: 0.0, max: 1.0 })
                     .with_smoother(SmoothingStyle::Linear(10.0)),
                 // feedback: FloatParam::new("feedback", 0.15, FloatRange::Linear { min: 0.0, max: 1.0 })
                 //     .with_smoother(SmoothingStyle::Linear(10.0)),
@@ -100,7 +100,7 @@ impl Plugin for HarmonicPercolator {
                 for sample in mono.iter_mut() {
                     let h = self.params.harmonics.smoothed.next();
                     let b = self.params.balance.smoothed.next();
-                    let s = self.params.sharpness.smoothed.next();
+                    let s = self.params.character.smoothed.next();
                     // let f = self.params.feedback.smoothed.next();
                     *sample = self.dsp_left.filter(h, s, b, *sample);
                 }
@@ -109,7 +109,7 @@ impl Plugin for HarmonicPercolator {
                 for (l, r) in left.iter_mut().zip(right.iter_mut()) {
                     let h = self.params.harmonics.smoothed.next();
                     let b = self.params.balance.smoothed.next();
-                    let s = self.params.sharpness.smoothed.next();
+                    let s = self.params.character.smoothed.next();
                     // let f = self.params.feedback.smoothed.next();
                     *l = self.dsp_left.filter(h, s,  b, *l);
                     *r = self.dsp_right.filter(h, s, b, *r);

@@ -1,6 +1,18 @@
 use fundsp::prelude32::*;
 use nalgebra::{SMatrix, SVector};
 
+// cutoffs in hz, tuned at the sample rate the node runs at
+const LPF_FC: f32 = 14700.0;
+const ACOUSTIC_FC: f32 = 1200.0;
+const FB_LPF_FC: f32 = 7200.0;
+const DC_BLOCK_FC: f32 = 100.0;
+const REF_SR: f32 = 88200.0;
+
+// pole of a one-pole filter: y += (1 - pole) * (x - y)
+pub fn pole_from_fc(fc: f32, sr: f32) -> f32 {
+    (-2.0 * std::f32::consts::PI * fc / sr).exp()
+}
+
 // integrated state-space system for linear circuitry simulation
 #[derive(Clone)]
 pub struct CircuitStateSpace {
@@ -30,32 +42,26 @@ impl Default for CircuitStateSpace {
 impl CircuitStateSpace {
     // computes analytical state-space matrices using bilinear transform
     pub fn recalculate_matrices(&mut self, sr: f32) {
+        // eprintln!("sr = {sr}");
+
         self.current_sr = sr;
         let t = 1.0 / sr;
 
-        // equivalent physical cutoff frequencies (rad/s)
-        let r1_c1 = 2.0 * std::f32::consts::PI * 22.0; // dc input blocker cutoff - tuned for tighter low end
-        let r2_c2 = 2.0 * std::f32::consts::PI * 2800.0; // germanium bandwidth cutoff - matched to real leakage
+        let w1 = 2.0 * std::f32::consts::PI * 22.0;
+        let w2 = 2.0 * std::f32::consts::PI * 2800.0;
 
-        // continuous-time state-space representation matrices
-        let a_continuous = SMatrix::<f32, 2, 2>::new(-r1_c1, 0.0, 0.0, -r2_c2);
-        let b_continuous = SVector::<f32, 2>::new(r1_c1, r2_c2);
-        let c_continuous = SMatrix::<f32, 1, 2>::new(-1.0, 1.0);
-        let d_continuous = 1.0;
+        // cascade: high-pass (w1) followed by low-pass (w2)
+        let a = SMatrix::<f32, 2, 2>::new(-w1, 0.0, -w2, -w2);
+        let b = SVector::<f32, 2>::new(w1, w2);
+        let c = SMatrix::<f32, 1, 2>::new(0.0, 1.0);
 
-        // discrete-time mapping using standard trapezoidal discretization
         let identity = SMatrix::<f32, 2, 2>::identity();
-        let inv_term = (identity - a_continuous * (t / 2.0))
-            .try_inverse()
-            .unwrap_or_else(SMatrix::<f32, 2, 2>::identity);
+        let inv = (identity - a * (t / 2.0)).try_inverse().unwrap_or(identity);
 
-        self.ad = inv_term * (identity + a_continuous * (t / 2.0));
-        self.bd = inv_term * b_continuous * (t / 2.0);
-        self.cd = c_continuous * (identity + self.ad) * 0.5;
-
-        // extracts explicit scalar f32 value from 1x1 matrix multiplication product
-        let cd_times_bd = c_continuous * self.bd;
-        self.dd = d_continuous + cd_times_bd[0];
+        self.ad = inv * (identity + a * (t / 2.0));
+        self.bd = inv * b * t;
+        self.cd = c * inv;
+        self.dd = (c * inv * b)[0] * (t / 2.0);
     }
 
     // applies the linear filter system in a single loop-free step
@@ -110,11 +116,16 @@ pub struct GermaniumStage {
     pub acoustic_mem: f32,
     pub fb_lpf_mem: f32,
     pub dc_block_mem: f32, // introduced memory tracker for realtime output waveform centering
+    pub lpf_coeff: f32,
+    pub acoustic_a: f32,
+    pub fb_lpf_a: f32,
+    pub dc_leak: f32,
+    pub rate_scale: f32,
 }
 
 impl Default for GermaniumStage {
     fn default() -> Self {
-        Self {
+        let mut s = Self {
             lpf: OnePoleLpf::default(),
             bias: shared(0.3),
             feedback_mix: shared(0.15),
@@ -123,13 +134,41 @@ impl Default for GermaniumStage {
             acoustic_mem: 0.0,
             fb_lpf_mem: 0.0,
             dc_block_mem: 0.0,
-        }
+            lpf_coeff: 0.0,
+            acoustic_a: 0.0,
+            fb_lpf_a: 0.0,
+            dc_leak: 0.0,
+            rate_scale: 1.0,
+        };
+        s.retune(44100.0);
+        s
     }
 }
 
 impl GermaniumStage {
+    fn clear(&mut self) {
+        self.feedback_mem = 0.0;
+        self.fb_hp_mem = 0.0;
+        self.acoustic_mem = 0.0;
+        self.fb_lpf_mem = 0.0;
+        self.dc_block_mem = 0.0;
+    }
+
+    pub fn retune(&mut self, sr: f32) {
+        self.lpf_coeff = pole_from_fc(LPF_FC, sr);
+        self.acoustic_a = 1.0 - pole_from_fc(ACOUSTIC_FC, sr);
+        self.fb_lpf_a = 1.0 - pole_from_fc(FB_LPF_FC, sr);
+        self.dc_leak = pole_from_fc(DC_BLOCK_FC, sr);
+        self.rate_scale = REF_SR / sr;
+    }
+
     // applies soft pnp germanium saturation with interstage 220k shunt feedback loop
-    pub fn process(&mut self, input: f32, lpf_coeff: f32, harmonics: f32) -> f32 {
+    pub fn process(&mut self, input: f32, harmonics: f32) -> f32 {
+        if !input.is_finite() {
+            self.clear();
+            return 0.0;
+        }
+
         let mix = self.feedback_mix.value();
 
         // AC coupling to prevent DC offset accumulation inside feedback path
@@ -140,11 +179,11 @@ impl GermaniumStage {
         let base_factor = 0.03 + (1.0 - harmonics) * 0.05;
         let freq_factor =
             (base_factor + (input.abs() * 0.12 * (1.0 + harmonics))) * lock_protection;
-        self.fb_hp_mem += freq_factor.min(0.95) * fb_ac;
+        self.fb_hp_mem += (freq_factor * self.rate_scale).min(0.95) * fb_ac;
 
         // fast acoustic coupling phase emulation using physical dissipation
         let acoustic_coupling = fb_ac - self.acoustic_mem;
-        self.acoustic_mem += 0.08 * acoustic_coupling;
+        self.acoustic_mem += self.acoustic_a * acoustic_coupling;
 
         // emulates original 220k ohm resistor network scale factor feeding back into silicon node
         let r_220k_scale = 1.0 / 220000.0;
@@ -159,14 +198,14 @@ impl GermaniumStage {
         let raw_input_loop = acoustic_coupling * r_220k_scale * feedback_gain_mod;
 
         // loop lowpass dampening: smoothed factor slightly to ensure unity phase margin
-        self.fb_lpf_mem = 0.4 * raw_input_loop + 0.6 * self.fb_lpf_mem;
+        self.fb_lpf_mem = self.fb_lpf_a * raw_input_loop + (1.0 - self.fb_lpf_a) * self.fb_lpf_mem;
         let input_loop = self.fb_lpf_mem;
 
         let mixed = input + input_loop;
 
         // electrical rail bounding: prevent numerical infinite explosions on feedback memory accumulation
         let bounded_mixed = mixed.clamp(-10.0, 10.0);
-        let filtered = self.lpf.process(bounded_mixed, lpf_coeff);
+        let filtered = self.lpf.process(bounded_mixed, self.lpf_coeff);
 
         // reads the atomic parameter to shift the clipping wave center
         // dynamic link: smoothly scale bias impact back as drive grows to preserve symmetry headroom
@@ -178,8 +217,7 @@ impl GermaniumStage {
         self.feedback_mem = saturated_out;
 
         // dynamic waveform centering: high pass filter to prevent disproportionate electrical sag
-        let dc_leak = 0.993; // tight time constant to preserve structural asymmetric harmonic transients
-        self.dc_block_mem = dc_leak * self.dc_block_mem + (1.0 - dc_leak) * saturated_out;
+        self.dc_block_mem = self.dc_leak * self.dc_block_mem + (1.0 - self.dc_leak) * saturated_out;
 
         saturated_out - self.dc_block_mem
     }
@@ -203,18 +241,25 @@ impl Default for DiodeClipper {
 impl DiodeClipper {
     #[inline]
     fn lambert_w_approx(&self, x: f32) -> f32 {
-        if x < 0.0 || x.is_nan() {
+        if x <= 0.0 || x.is_nan() {
             return 0.0;
         }
-        if x < 1.0 {
-            // approx for low values
-            x * (1.0 - 0.3343 * x + 0.1145 * x * x)
+
+        // initial guess
+        let mut w = if x < 3.0 {
+            x.ln_1p() * 0.75
         } else {
-            // saturation approx
-            let ln_x = if x.is_infinite() { 88.0 } else { x.ln() }; // safe fallback boundary for extreme exponents
-            let ln_ln_x = ln_x.ln();
-            ln_x - ln_ln_x + (ln_ln_x / ln_x)
+            let l = x.ln();
+            l - l.ln() + l.ln() / l
+        };
+
+        // halley iterations
+        for _ in 0..2 {
+            let ew = w.exp();
+            let f = w * ew - x;
+            w -= f / (ew * (w + 1.0) - (w + 2.0) * f / (2.0 * w + 2.0));
         }
+        w
     }
 
     pub fn process(&self, input_v: f32) -> f32 {
@@ -305,7 +350,77 @@ impl AudioNode for GermaniumStage {
     type Outputs = U1;
     #[inline]
     fn tick(&mut self, input: &Frame<f32, Self::Inputs>) -> Frame<f32, Self::Outputs> {
-        let out = self.process(input[0], 0.35, input[1]);
+        let out = self.process(input[0], input[1]);
         Frame::from([out])
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f64) {
+        self.retune(sample_rate as f32);
+    }
+}
+
+// tests ===========================================================================================
+
+#[test]
+fn diode_curve_is_bounded_and_monotonic() {
+    let d = DiodeClipper::default();
+    let mut prev = f32::NEG_INFINITY;
+    for i in -2000..=2000 {
+        let v = i as f32 * 0.001;
+        let out = d.process(v);
+        assert!(out.is_finite());
+        assert!(out.abs() <= v.abs() + 1e-6, "out {out} exceeds input {v}");
+        assert!(out >= prev - 1e-6, "not monotonic at {v}");
+        prev = out;
+    }
+}
+
+#[test]
+fn diode_clips_in_the_knee_region() {
+    let d = DiodeClipper::default();
+    assert!(d.process(0.3) < 0.9 * 0.3);
+    // germanium side conducts earlier than the silicon side
+    assert!(d.process(1.0) < -d.process(-1.0));
+}
+
+#[allow(dead_code)]
+fn sine_gain(sr: f32, freq: f32) -> f32 {
+    let mut f = CircuitStateSpace::default();
+    f.recalculate_matrices(sr);
+    let n = sr as usize;
+    let (mut in_sq, mut out_sq) = (0.0f64, 0.0f64);
+    for i in 0..n {
+        let x = (2.0 * std::f32::consts::PI * freq * i as f32 / sr).sin();
+        let y = f.process(x);
+        // skip the first half second to let the filter settle
+        if i >= n / 2 {
+            in_sq += (x * x) as f64;
+            out_sq += (y * y) as f64;
+        }
+    }
+    (out_sq / in_sq).sqrt() as f32
+}
+
+#[test]
+fn state_space_blocks_dc() {
+    let mut f = CircuitStateSpace::default();
+    let mut y = 1.0;
+    for _ in 0..44100 {
+        y = f.process(1.0);
+    }
+    assert!(y.abs() < 1e-3, "dc leaked: {y}");
+}
+
+#[test]
+fn state_space_frequency_response() {
+    for sr in [44100.0, 48000.0, 96000.0, 192000.0] {
+        let cases = [(22.0, 0.707), (1000.0, 0.94), (2800.0, 0.707)];
+        for (freq, expected) in cases {
+            let g = sine_gain(sr, freq);
+            assert!(
+                (g - expected).abs() < 0.03,
+                "sr {sr}, {freq} Hz: gain {g}, expected {expected}"
+            );
+        }
     }
 }

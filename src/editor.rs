@@ -1,17 +1,27 @@
 use crate::PercolatorParams;
-use egui::{Margin, Vec2};
+use egui::{Margin, RichText, Vec2};
 use nice_plug::{context::gui::GuiContext, editor::dpi::LogicalSize, prelude::*};
 use nice_plug_egui::{NiceEguiApp, resizable_window::ResizableWindow, widgets::ParamSlider};
 use std::sync::Arc;
 
+mod fonts;
+mod knob;
+mod theme;
+
 pub(crate) const MIN_WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(300.0, 300.0);
-pub(crate) const RESIZE_HINT: ResizeHint = ResizeHint::resizable().with_min_logical_size(MIN_WINDOW_SIZE);
+pub(crate) const RESIZE_HINT: ResizeHint =
+    ResizeHint::resizable().with_min_logical_size(MIN_WINDOW_SIZE);
 pub(crate) const INITIAL_ZOOM_FACTOR: f32 = 1.0;
 
+#[allow(dead_code)]
 fn param_row<P: Param>(ui: &mut egui::Ui, param: &P, setter: &ParamSetter) {
     ui.label(param.name());
     ui.add(ParamSlider::for_param(param, setter).with_width(180.0));
     ui.end_row();
+}
+
+fn ui_header(text: &str, size: f32, ui: &mut egui::Ui) {
+    ui.label(RichText::new(text).heading().size(size));
 }
 
 /// Here you can store any state you need for your GUI.
@@ -47,6 +57,7 @@ impl NiceEguiApp for PercolatorEditor {
         nice_gui_ctx: GuiContext,
         _frame: &mut nice_plug_egui::Frame,
     ) -> Result<(), nice_plug_egui::baseview::HandlerError> {
+        fonts::install(&egui_ctx);
         self.open_state = Some(OpenEditorState::new(egui_ctx, nice_gui_ctx));
         Ok(())
     }
@@ -101,17 +112,14 @@ impl NiceEguiApp for PercolatorEditor {
 
                         // UI =============================================================================================
 
-                        ui.heading("ES Percolator");
+                        ui_header("harmonic percolator", 22.0, ui);
                         ui.add_space(8.0);
 
-                        egui::Grid::new("params")
-                            .num_columns(2)
-                            .spacing([12.0, 10.0])
-                            .show(ui, |ui| {
-                                param_row(ui, &self.params.harmonics, &setter);
-                                param_row(ui, &self.params.balance, &setter);
-                                param_row(ui, &self.params.character, &setter);
-                            });
+                        ui.horizontal(|ui| {
+                            knob::labeled_knob(ui, &self.params.harmonics, &setter, 90.0);
+                            knob::labeled_knob(ui, &self.params.balance, &setter, 90.0);
+                            knob::labeled_knob(ui, &self.params.character, &setter, 90.0);
+                        });
 
                         // ================================================================================================
 
